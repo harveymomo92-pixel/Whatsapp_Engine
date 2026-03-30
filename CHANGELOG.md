@@ -7,3 +7,4 @@
 - improved outgoing payload normalization for loging-inbox compatibility
 - reduced polling interval to 2000 ms
 - added overlap protection so concurrent poll cycles do not double-send the same message
+- added bootstrap-first-run option (`BOOTSTRAP_MARK_SEEN_ONLY`) so new deployments can mark backlog as seen without flooding downstream webhooks

@@ -69,7 +69,14 @@ POLL_INTERVAL_MS=2000
 POLL_MESSAGE_LIMIT=20
 BOOTSTRAP_MARK_SEEN_ONLY=false
 OUTGOING_WEBHOOK_URL=http://127.0.0.1:8570/webhook/whatsapp
+LOG_PATH=./data/engine.log
 ```
+
+For a brand-new deployment where you do not want to forward historical backlog immediately, temporarily set:
+```env
+BOOTSTRAP_MARK_SEEN_ONLY=true
+```
+Then restart the service. After the first sync completes, set it back to `false` for normal forwarding of only new messages.
 
 ## WhatsApp auto-reply allowlist
 
