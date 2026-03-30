@@ -1,4 +1,20 @@
+# Workspace-private files
+.openclaw/
+memory/
+AGENTS.md
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
+
+# Project runtime files
 .env
 node_modules/
 data/*.log
 data/*.tmp
+
+# Legacy local project folder
+Whatsapp Engine/.env
+Whatsapp Engine/node_modules/

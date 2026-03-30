@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-whatsapp-wrapper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local API wrapper and webhook bridge for openclaw-whatsapp",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  }
+}
