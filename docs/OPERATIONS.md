@@ -12,6 +12,24 @@ Engine service:
 systemctl --user status whatsapp-engine.service
 ```
 
+## Autostart after reboot
+
+Ensure the service starts automatically without manual intervention:
+
+```bash
+loginctl enable-linger root
+systemctl --user daemon-reload
+systemctl --user enable openclaw-whatsapp.service
+systemctl --user enable whatsapp-engine.service
+```
+
+Verify:
+```bash
+systemctl --user is-enabled openclaw-whatsapp.service
+systemctl --user is-enabled whatsapp-engine.service
+loginctl show-user root | grep Linger
+```
+
 ## Restart
 
 ```bash
@@ -21,9 +39,15 @@ systemctl --user restart whatsapp-engine.service
 
 ## Logs
 
+Structured engine log:
 ```bash
-journalctl --user -u openclaw-whatsapp.service -n 100 --no-pager
-journalctl --user -u whatsapp-engine.service -n 100 --no-pager
+tail -f /root/.openclaw/workspace/Whatsapp\ Engine/data/engine.log
+```
+
+Store/debug state:
+```bash
+cat /root/.openclaw/workspace/Whatsapp\ Engine/data/store.json
+curl http://127.0.0.1:8560/api/debug/store
 ```
 
 ## Health checks
@@ -32,6 +56,7 @@ journalctl --user -u whatsapp-engine.service -n 100 --no-pager
 curl http://127.0.0.1:8555/status
 curl http://127.0.0.1:8560/health
 curl http://127.0.0.1:8560/api/status
+curl http://127.0.0.1:8560/api/debug/store
 ```
 
 ## Tailscale Serve
@@ -47,11 +72,33 @@ Current route:
 
 ## Common problems
 
-### Engine starts but endpoint fails
-Check that the bridge is running:
+### Engine starts but incoming sync is empty
+Check:
+- bridge is running
+- JID route handling in the engine is using the bridge-compatible path format
+- `/api/debug/store` shows `lastPollAt` moving forward
+
+Useful commands:
 ```bash
-systemctl --user status openclaw-whatsapp.service
+curl http://127.0.0.1:8560/api/debug/store
+curl "http://127.0.0.1:8555/chats/<jid>/messages?limit=5"
 ```
+
+### Duplicate forwarded messages
+Check engine log for overlap behavior:
+```bash
+grep poll_skipped_overlap /root/.openclaw/workspace/Whatsapp\ Engine/data/engine.log | tail
+```
+
+The engine now prevents overlapping poll cycles, which should stop duplicate sends during heavy backfill.
+
+### Bootstrap flooding old messages
+Use bootstrap mark-seen mode in `.env`:
+```env
+BOOTSTRAP_MARK_SEEN_ONLY=true
+```
+
+With this enabled, the first sync marks backlog messages as seen without forwarding them all. After the first poll completes, the engine resumes normal forwarding for new messages.
 
 ### Port conflict on `8560`
 Check listeners:

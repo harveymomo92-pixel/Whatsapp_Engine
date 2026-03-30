@@ -12,6 +12,24 @@ systemctl --user restart openclaw-whatsapp.service
 systemctl --user restart whatsapp-engine.service
 ```
 
+## Enable on boot / restart survival
+
+To ensure both services come back automatically after system restart and do not require manual start:
+
+```bash
+loginctl enable-linger root
+systemctl --user daemon-reload
+systemctl --user enable openclaw-whatsapp.service
+systemctl --user enable whatsapp-engine.service
+```
+
+Confirm:
+```bash
+systemctl --user is-enabled openclaw-whatsapp.service
+systemctl --user is-enabled whatsapp-engine.service
+loginctl show-user root | grep Linger
+```
+
 ## Status
 
 ```bash
@@ -36,6 +54,22 @@ Suggested private URL flow:
 - Do not expose raw bridge `:8555` directly to public internet.
 - Prefer protecting wrapper with webhook secret and/or private tailnet access.
 - If public exposure is needed later, put Caddy/Nginx in front with auth/TLS/rate limits.
+
+## Incoming sync behavior
+
+Current behavior:
+- polling-based incoming sync
+- bridge-compatible JID routing for `/chats/:jid/messages`
+- overlap protection to prevent duplicate sends from concurrent poll cycles
+- optional bootstrap mode to mark backlog as seen without forwarding everything
+
+Relevant `.env` options:
+```env
+POLL_INTERVAL_MS=2000
+POLL_MESSAGE_LIMIT=20
+BOOTSTRAP_MARK_SEEN_ONLY=false
+OUTGOING_WEBHOOK_URL=http://127.0.0.1:8570/webhook/whatsapp
+```
 
 ## WhatsApp auto-reply allowlist
 
