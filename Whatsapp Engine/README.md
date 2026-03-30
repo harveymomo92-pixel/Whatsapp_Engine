@@ -2,6 +2,16 @@
 
 Small local Node.js API wrapper and webhook engine around `openclaw-whatsapp`.
 
+Documentation index:
+- `docs/README.md`
+- `docs/OVERVIEW.md`
+- `docs/SETUP.md`
+- `docs/API.md`
+- `docs/WEBHOOKS.md`
+- `docs/EXAMPLES.md`
+- `docs/DEPLOYMENT.md`
+- `docs/OPERATIONS.md`
+
 ## What it does
 
 - Proxies core bridge APIs from `openclaw-whatsapp`
