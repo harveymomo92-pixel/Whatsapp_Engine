@@ -13,13 +13,19 @@ const OUTGOING_WEBHOOK_TOKEN = process.env.OUTGOING_WEBHOOK_TOKEN || '';
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 2000);
 const POLL_MESSAGE_LIMIT = Number(process.env.POLL_MESSAGE_LIMIT || 20);
 const BOOTSTRAP_MARK_SEEN_ONLY = String(process.env.BOOTSTRAP_MARK_SEEN_ONLY || 'false').toLowerCase() === 'true';
+const DELIVERY_RETRY_BASE_MS = Number(process.env.DELIVERY_RETRY_BASE_MS || 5000);
+const DELIVERY_RETRY_MAX_MS = Number(process.env.DELIVERY_RETRY_MAX_MS || 300000);
+const DELIVERY_MAX_ATTEMPTS = Number(process.env.DELIVERY_MAX_ATTEMPTS || 10);
 const STORE_PATH = path.resolve(process.cwd(), process.env.STORE_PATH || './data/store.json');
 const LOG_PATH = path.resolve(process.cwd(), process.env.LOG_PATH || './data/engine.log');
+const DELIVERY_QUEUE_PATH = path.resolve(process.cwd(), process.env.DELIVERY_QUEUE_PATH || './data/delivery-queue.json');
 
 ensureDir(path.dirname(STORE_PATH));
 ensureDir(path.dirname(LOG_PATH));
+ensureDir(path.dirname(DELIVERY_QUEUE_PATH));
 const store = loadStore(STORE_PATH);
 let pollInProgress = false;
+let queueDrainInProgress = false;
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -54,6 +60,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/debug/store') {
+      const queue = loadDeliveryQueue();
       return json(res, 200, {
         ok: true,
         seenCount: Object.keys(store.seenMessageKeys || {}).length,
@@ -63,6 +70,8 @@ const server = http.createServer(async (req, res) => {
         lastError: store.lastError || null,
         bootstrapCompletedAt: store.bootstrapCompletedAt || null,
         bootstrapMarkSeenOnly: BOOTSTRAP_MARK_SEEN_ONLY,
+        deliveryQueueSize: queue.length,
+        deliveryStats: store.deliveryStats,
       });
     }
 
@@ -122,6 +131,9 @@ server.listen(PORT, () => {
     pollIntervalMs: POLL_INTERVAL_MS,
     pollMessageLimit: POLL_MESSAGE_LIMIT,
     bootstrapMarkSeenOnly: BOOTSTRAP_MARK_SEEN_ONLY,
+    deliveryRetryBaseMs: DELIVERY_RETRY_BASE_MS,
+    deliveryRetryMaxMs: DELIVERY_RETRY_MAX_MS,
+    deliveryMaxAttempts: DELIVERY_MAX_ATTEMPTS,
   });
 });
 
@@ -135,6 +147,7 @@ if (OUTGOING_WEBHOOK_URL) {
     pollInProgress = true;
     try {
       await pollOutgoing();
+      await drainDeliveryQueue();
     } catch (error) {
       store.lastErrorAt = new Date().toISOString();
       store.lastError = error.message;
@@ -166,31 +179,42 @@ async function pollOutgoing() {
     }
 
     for (const message of messages.slice().reverse()) {
-      if (!shouldForwardMessage(message)) continue;
+      if (!shouldForwardMessage(message)) {
+        trackStat('skipped');
+        continue;
+      }
 
       const key = buildMessageKey(jid, message);
-      if (!key) continue;
-      if (store.seenMessageKeys[key]) continue;
+      if (!key) {
+        trackStat('skipped');
+        continue;
+      }
+      if (store.seenMessageKeys[key]) {
+        trackStat('deduped');
+        continue;
+      }
 
       if (BOOTSTRAP_MARK_SEEN_ONLY && !store.bootstrapCompletedAt) {
         store.seenMessageKeys[key] = Date.now();
+        trackStat('bootstrapMarkedSeen');
         continue;
       }
 
       const payload = normalizeOutgoingPayload(chat, message);
-      if (!payload) continue;
+      if (!payload) {
+        trackStat('skipped');
+        continue;
+      }
 
       store.seenMessageKeys[key] = Date.now();
-      await postJson(OUTGOING_WEBHOOK_URL, payload, OUTGOING_WEBHOOK_TOKEN);
-      store.lastSuccessfulPostAt = new Date().toISOString();
-      postedCount += 1;
-
-      logLine('webhook_sent', {
-        key,
-        jid,
-        messageId: payload.message.id,
-        messageType: payload.message.msg_type,
-      });
+      try {
+        await deliverPayload(key, payload, { jid, source: 'poll' });
+        postedCount += 1;
+      } catch (error) {
+        store.lastErrorAt = new Date().toISOString();
+        store.lastError = error.message;
+        enqueueDelivery({ key, payload, jid, source: 'poll' }, error);
+      }
     }
   }
 
@@ -203,7 +227,113 @@ async function pollOutgoing() {
   saveStore(STORE_PATH, store);
 
   if (postedCount > 0) {
-    logLine('poll_complete', { postedCount, seenCount: Object.keys(store.seenMessageKeys).length });
+    logLine('poll_complete', {
+      postedCount,
+      seenCount: Object.keys(store.seenMessageKeys).length,
+      queueSize: loadDeliveryQueue().length,
+    });
+  }
+}
+
+async function deliverPayload(key, payload, meta = {}) {
+  await postJson(OUTGOING_WEBHOOK_URL, payload, OUTGOING_WEBHOOK_TOKEN);
+  store.lastSuccessfulPostAt = new Date().toISOString();
+  trackStat('forwarded');
+  saveStore(STORE_PATH, store);
+
+  logLine('webhook_sent', {
+    key,
+    jid: meta.jid || payload.chat?.jid || '',
+    messageId: payload.message?.id || '',
+    messageType: payload.message?.msg_type || '',
+    source: meta.source || 'unknown',
+  });
+}
+
+function enqueueDelivery(job, error) {
+  const queue = loadDeliveryQueue();
+  const now = Date.now();
+  const existing = queue.find((item) => item.key === job.key);
+  const base = {
+    key: job.key,
+    jid: job.jid || job.payload?.chat?.jid || '',
+    payload: job.payload,
+    source: job.source || 'poll',
+    attempts: 0,
+    nextAttemptAt: now + DELIVERY_RETRY_BASE_MS,
+    lastError: error ? error.message : 'Unknown delivery error',
+    createdAt: new Date(now).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  };
+
+  if (existing) {
+    existing.lastError = base.lastError;
+    existing.updatedAt = base.updatedAt;
+    existing.nextAttemptAt = Math.min(now + DELIVERY_RETRY_BASE_MS, now + DELIVERY_RETRY_MAX_MS);
+  } else {
+    queue.push(base);
+  }
+
+  saveDeliveryQueue(queue);
+  trackStat('queued');
+  saveStore(STORE_PATH, store);
+  logLine('delivery_queued', { key: job.key, jid: base.jid, reason: base.lastError });
+}
+
+async function drainDeliveryQueue() {
+  if (queueDrainInProgress) return;
+  queueDrainInProgress = true;
+
+  try {
+    const queue = loadDeliveryQueue();
+    if (!queue.length) return;
+
+    const now = Date.now();
+    const remaining = [];
+
+    for (const item of queue) {
+      if ((item.nextAttemptAt || 0) > now) {
+        remaining.push(item);
+        continue;
+      }
+
+      try {
+        await deliverPayload(item.key, item.payload, { jid: item.jid, source: 'retry' });
+        trackStat('retriedSuccess');
+        logLine('delivery_retry_success', { key: item.key, jid: item.jid, attempts: item.attempts + 1 });
+      } catch (error) {
+        item.attempts = Number(item.attempts || 0) + 1;
+        item.lastError = error.message;
+        item.updatedAt = new Date().toISOString();
+
+        if (item.attempts >= DELIVERY_MAX_ATTEMPTS) {
+          trackStat('dropped');
+          store.lastErrorAt = new Date().toISOString();
+          store.lastError = `Dropped delivery ${item.key}: ${error.message}`;
+          logLine('delivery_dropped', { key: item.key, jid: item.jid, attempts: item.attempts, error: error.message });
+          continue;
+        }
+
+        const delay = Math.min(DELIVERY_RETRY_BASE_MS * (2 ** (item.attempts - 1)), DELIVERY_RETRY_MAX_MS);
+        item.nextAttemptAt = Date.now() + delay;
+        remaining.push(item);
+        trackStat('retryScheduled');
+        store.lastErrorAt = new Date().toISOString();
+        store.lastError = error.message;
+        logLine('delivery_retry_scheduled', {
+          key: item.key,
+          jid: item.jid,
+          attempts: item.attempts,
+          nextAttemptAt: new Date(item.nextAttemptAt).toISOString(),
+          error: error.message,
+        });
+      }
+    }
+
+    saveDeliveryQueue(remaining);
+    saveStore(STORE_PATH, store);
+  } finally {
+    queueDrainInProgress = false;
   }
 }
 
@@ -390,7 +520,11 @@ function ensureDir(dir) {
 
 function loadStore(filePath) {
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    parsed.seenMessageKeys = parsed.seenMessageKeys || {};
+    parsed.deliveryStats = parsed.deliveryStats || defaultDeliveryStats();
+    if (!Object.prototype.hasOwnProperty.call(parsed, 'bootstrapCompletedAt')) parsed.bootstrapCompletedAt = null;
+    return parsed;
   } catch {
     return {
       seenMessageKeys: {},
@@ -399,12 +533,44 @@ function loadStore(filePath) {
       lastErrorAt: null,
       lastError: null,
       bootstrapCompletedAt: null,
+      deliveryStats: defaultDeliveryStats(),
     };
   }
 }
 
 function saveStore(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+}
+
+function loadDeliveryQueue() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DELIVERY_QUEUE_PATH, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDeliveryQueue(queue) {
+  fs.writeFileSync(DELIVERY_QUEUE_PATH, JSON.stringify(queue, null, 2));
+}
+
+function defaultDeliveryStats() {
+  return {
+    forwarded: 0,
+    queued: 0,
+    retryScheduled: 0,
+    retriedSuccess: 0,
+    dropped: 0,
+    skipped: 0,
+    deduped: 0,
+    bootstrapMarkedSeen: 0,
+  };
+}
+
+function trackStat(name) {
+  if (!store.deliveryStats) store.deliveryStats = defaultDeliveryStats();
+  store.deliveryStats[name] = Number(store.deliveryStats[name] || 0) + 1;
 }
 
 function logLine(event, details = {}) {
