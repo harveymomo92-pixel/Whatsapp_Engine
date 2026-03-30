@@ -1,7 +1,15 @@
 # NEXT
 
-1. Verify that overlap protection fully eliminates duplicate sends during heavy backfill.
-2. Add webhook delivery retry/backoff with durable failed-delivery queue.
-3. Expand media handling for video/audio/document payloads in downstream consumers.
-4. Update project docs to include debug workflow using `/api/debug/store` and `data/engine.log`.
-5. Consider switching bootstrap mode off automatically in deployment templates after first successful sync.
+## Immediate
+1. Implement webhook retry/backoff with durable failed-delivery queue.
+2. Add chat filtering controls (allowlist/denylist, DM-only/group-only, selected groups).
+3. Expand `/api/debug/store` with delivery counters and failure statistics.
+
+## After that
+4. Improve bootstrap-first-run behavior so backlog handling is safer and more automatic.
+5. Strengthen deduplication with delivery markers/idempotency safeguards.
+6. Improve media payload normalization for video/audio/document events.
+
+## Later
+7. Add startup config validation with clearer operator errors.
+8. Explore event-driven bridge integration if upstream supports reliable inbound events.
