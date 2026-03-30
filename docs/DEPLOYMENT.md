@@ -36,3 +36,15 @@ Suggested private URL flow:
 - Do not expose raw bridge `:8555` directly to public internet.
 - Prefer protecting wrapper with webhook secret and/or private tailnet access.
 - If public exposure is needed later, put Caddy/Nginx in front with auth/TLS/rate limits.
+
+## WhatsApp auto-reply allowlist
+
+Current bridge behavior:
+- auto-reply remains enabled in `openclaw-whatsapp`
+- but it is restricted with an allowlist
+
+Current allowed number:
+- `6282221888321`
+
+That means only this DM contact should trigger the OpenClaw auto-reply worker.
+Other contacts should not trigger automatic replies.

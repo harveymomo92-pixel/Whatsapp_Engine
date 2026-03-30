@@ -67,5 +67,20 @@ openclaw-whatsapp status
 
 If needed, restart bridge and relink WhatsApp.
 
+### Unexpected auto-reply behavior
+Check bridge allowlist in:
+```bash
+/root/.openclaw-whatsapp/config.yaml
+```
+
+Current intended rule:
+- auto-reply is enabled
+- only `6282221888321` is allowlisted
+
+After changing allowlist settings:
+```bash
+systemctl --user restart openclaw-whatsapp.service
+```
+
 ### Webhooks not authorized
 Check `WEBHOOK_SECRET` in `.env` and ensure request header matches.
